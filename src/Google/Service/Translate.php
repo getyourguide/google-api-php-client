@@ -338,7 +338,7 @@ class Google_Service_Translate_TranslationsListResponse extends Google_Collectio
   }
   public function getTranslations()
   {
-    return $this->translations;
+    return $this->modelData['data']['translations'];
   }
 }
 

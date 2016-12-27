@@ -18,173 +18,82 @@
  * under the License.
  */
 
+use GuzzleHttp\Client;
+use Google\Auth\Cache\MemoryCacheItemPool;
+
 class Google_CacheTest extends BaseTest
 {
-  public function testFile()
+  public function testInMemoryCache()
   {
-    $dir = sys_get_temp_dir() . '/google-api-php-client/tests';
-    $cache = new Google_Cache_File($dir);
-    $cache->set('foo', 'bar');
-    $this->assertEquals($cache->get('foo'), 'bar');
+    $this->checkServiceAccountCredentials();
 
-    $this->getSetDelete($cache);
-  }
+    $client = $this->getClient();
+    $client->useApplicationDefaultCredentials();
+    $client->setAccessType('offline');
+    $client->setScopes(['https://www.googleapis.com/auth/drive.readonly']);
+    $client->setCache(new MemoryCacheItemPool);
 
-  public function testFileWithTrailingSlash()
-  {
-    $dir = sys_get_temp_dir() . '/google-api-php-client/tests/';
-    $cache = new Google_Cache_File($dir);
-    $cache->set('foo', 'bar');
-    $this->assertEquals($cache->get('foo'), 'bar');
-
-    $this->getSetDelete($cache);
-  }
-
-  public function testBaseCacheDirectoryPermissions()
-  {
-    $dir = sys_get_temp_dir() . '/google-api-php-client/tests/' . rand();
-    $cache = new Google_Cache_File($dir);
-    $cache->set('foo', 'bar');
-
-    $method = new ReflectionMethod($cache, 'getWriteableCacheFile');
-    $method->setAccessible(true);
-    $filename = $method->invoke($cache, 'foo');
-    $stat = stat($dir);
-
-    $this->assertEquals(0777 & ~umask(), $stat['mode'] & 0777);
-  }
-
-  public function testCacheDirectoryPermissions()
-  {
-    $dir = sys_get_temp_dir() . '/google-api-php-client/tests/' . rand();
-    $cache = new Google_Cache_File($dir);
-    $cache->set('foo', 'bar');
-
-    $method = new ReflectionMethod($cache, 'getWriteableCacheFile');
-    $method->setAccessible(true);
-    $filename = $method->invoke($cache, 'foo');
-    $stat = stat(dirname($filename));
-
-    $this->assertEquals(0700, $stat['mode'] & 0777);
-  }
-
-  public function testCacheFilePermissions()
-  {
-    $dir = sys_get_temp_dir() . '/google-api-php-client/tests/';
-    $cache = new Google_Cache_File($dir);
-    $cache->set('foo', 'bar');
-
-    $method = new ReflectionMethod($cache, 'getWriteableCacheFile');
-    $method->setAccessible(true);
-    $filename = $method->invoke($cache, 'foo');
-    $stat = stat($filename);
-
-    $this->assertEquals(0600, $stat['mode'] & 0777);
-  }
-
-  public function testNull()
-  {
-    $cache = new Google_Cache_Null();
-    $cache->set('foo', 'bar');
-    $cache->delete('foo');
-    $this->assertEquals(false, $cache->get('foo'));
-
-    $cache->set('foo.1', 'bar.1');
-    $this->assertEquals($cache->get('foo.1'), false);
-
-    $cache->set('foo', 'baz');
-    $this->assertEquals($cache->get('foo'), false);
-
-    $cache->set('foo', null);
-    $cache->delete('foo');
-    $this->assertEquals($cache->get('foo'), false);
-  }
-
-  public function testMemory()
-  {
-    $cache = new Google_Cache_Memory();
-    $cache->set('foo', 'bar');
-    $cache->delete('foo');
-    $this->assertEquals(false, $cache->get('foo'));
-
-    $cache->set('foo.1', 'bar.1');
-    $this->assertEquals($cache->get('foo.1'), 'bar.1');
-
-    $cache->set('foo', 'baz');
-    $this->assertEquals($cache->get('foo'), 'baz');
-
-    $cache->delete('foo');
-    $this->assertEquals($cache->get('foo'), false);
-  }
-
-  /**
-   * @requires extension Memcache
-   */
-  public function testMemcache()
-  {
-    $host = getenv('MEMCACHE_HOST') ? getenv('MEMCACHE_HOST') : null;
-    $port = getenv('MEMCACHE_PORT') ? getenv('MEMCACHE_PORT') : null;
-    if (!($host && $port)) {
-      $this->markTestSkipped('Test requires memcache host and port specified');
+    /* Refresh token when expired */
+    if ($client->isAccessTokenExpired()) {
+      $client->refreshTokenWithAssertion();
     }
 
-    $cache = new Google_Cache_Memcache($host, $port);
-
-    $this->getSetDelete($cache);
+    /* Make a service call */
+    $service = new Google_Service_Drive($client);
+    $files = $service->files->listFiles();
+    $this->assertInstanceOf('Google_Service_Drive_FileList', $files);
   }
 
-  /**
-   * @requires extension APC
-   */
-  public function testAPC()
+  public function testFileCache()
   {
-    if (!ini_get('apc.enable_cli')) {
-      $this->markTestSkipped('Test requires APC enabled for CLI');
+    $this->onlyPhp55AndAbove();
+    $this->checkServiceAccountCredentials();
+
+    $client = new Google_Client();
+    $client->useApplicationDefaultCredentials();
+    $client->setScopes(['https://www.googleapis.com/auth/drive.readonly']);
+    // filecache with new cache dir
+    $cache = $this->getCache(sys_get_temp_dir() . '/cloud-samples-tests-php-cache-test/');
+    $client->setCache($cache);
+
+    $token1 = null;
+    $client->setTokenCallback(function($cacheKey, $accessToken) use ($cache, &$token1) {
+      $token1 = $accessToken;
+      $cacheItem = $cache->getItem($cacheKey);
+      // expire the item
+      $cacheItem->expiresAt(new DateTime('now -1 second'));
+      $cache->save($cacheItem);
+
+      $cacheItem2 = $cache->getItem($cacheKey);
+    });
+
+    /* Refresh token when expired */
+    if ($client->isAccessTokenExpired()) {
+      $client->refreshTokenWithAssertion();
     }
-    $cache = new Google_Cache_Apc();
 
-    $this->getSetDelete($cache);
-  }
+    /* Make a service call */
+    $service = new Google_Service_Drive($client);
+    $files = $service->files->listFiles();
+    $this->assertInstanceOf('Google_Service_Drive_FileList', $files);
 
-  public function getSetDelete($cache)
-  {
-    $cache->set('foo', 'bar');
-    $cache->delete('foo');
-    $this->assertEquals(false, $cache->get('foo'));
+    sleep(1);
 
-    $cache->set('foo.1', 'bar.1');
-    $cache->delete('foo.1');
-    $this->assertEquals($cache->get('foo.1'), false);
+    // make sure the token expires
+    $client = new Google_Client();
+    $client->useApplicationDefaultCredentials();
+    $client->setScopes(['https://www.googleapis.com/auth/drive.readonly']);
+    $client->setCache($cache);
+    $token2 = null;
+    $client->setTokenCallback(function($cacheKey, $accessToken) use (&$token2) {
+      $token2 = $accessToken;
+    });
 
-    $cache->set('foo', 'baz');
-    $cache->delete('foo');
-    $this->assertEquals($cache->get('foo'), false);
+    /* Make another service call */
+    $service = new Google_Service_Drive($client);
+    $files = $service->files->listFiles();
+    $this->assertInstanceOf('Google_Service_Drive_FileList', $files);
 
-    $cache->set('foo', null);
-    $cache->delete('foo');
-    $this->assertEquals($cache->get('foo'), false);
-
-    $obj = new stdClass();
-    $obj->foo = 'bar';
-    $cache->set('foo', $obj);
-    $cache->delete('foo');
-    $this->assertEquals($cache->get('foo'), false);
-
-    $cache->set('foo.1', 'bar.1');
-    $this->assertEquals($cache->get('foo.1'), 'bar.1');
-
-    $cache->set('foo', 'baz');
-    $this->assertEquals($cache->get('foo'), 'baz');
-
-    $cache->set('foo', null);
-    $this->assertEquals($cache->get('foo'), null);
-
-    $cache->set('1/2/3', 'bar');
-    $this->assertEquals($cache->get('1/2/3'), 'bar');
-
-    $obj = new stdClass();
-    $obj->foo = 'bar';
-    $cache->set('foo', $obj);
-    $this->assertEquals($cache->get('foo'), $obj);
+    $this->assertNotEquals($token1, $token2);
   }
 }

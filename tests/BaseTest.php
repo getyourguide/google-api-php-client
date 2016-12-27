@@ -17,13 +17,14 @@
 
 use GuzzleHttp\ClientInterface;
 use Symfony\Component\DomCrawler\Crawler;
+use League\Flysystem\Adapter\Local;
+use League\Flysystem\Filesystem;
+use Cache\Adapter\Filesystem\FilesystemCachePool;
 
 class BaseTest extends PHPUnit_Framework_TestCase
 {
   private $key;
   private $client;
-  private $memcacheHost;
-  private $memcachePort;
   protected $testDir = __DIR__;
 
   public function getClient()
@@ -35,9 +36,13 @@ class BaseTest extends PHPUnit_Framework_TestCase
     return $this->client;
   }
 
-  public function getCache()
+  public function getCache($path = null)
   {
-    return new Google_Cache_File(sys_get_temp_dir().'/google-api-php-client-tests');
+    $path = $path ?: sys_get_temp_dir().'/google-api-php-client-tests/';
+    $filesystemAdapter = new Local($path);
+    $filesystem        = new Filesystem($filesystemAdapter);
+
+    return new FilesystemCachePool($filesystem);
   }
 
   private function createClient()
@@ -78,7 +83,10 @@ class BaseTest extends PHPUnit_Framework_TestCase
     list($clientId, $clientSecret) = $this->getClientIdAndSecret();
     $client->setClientId($clientId);
     $client->setClientSecret($clientSecret);
-    $client->setCache($this->getCache());
+    if (version_compare(PHP_VERSION, '5.5', '>=')) {
+      $client->setCache($this->getCache());
+    }
+
 
     return $client;
   }
@@ -87,12 +95,14 @@ class BaseTest extends PHPUnit_Framework_TestCase
   {
     $client = $this->getClient();
     $cache = $client->getCache();
+    $cacheItem = $cache->getItem('access_token');
 
-    if (!$token = $cache->get('access_token')) {
+    if (!$token = $cacheItem->get()) {
       if (!$token = $this->tryToGetAnAccessToken($client)) {
         return $this->markTestSkipped("Test requires access token");
       }
-      $cache->set('access_token', $token);
+      $cacheItem->set($token);
+      $cache->save($cacheItem);
     }
 
     $client->setAccessToken($token);
@@ -216,6 +226,13 @@ class BaseTest extends PHPUnit_Framework_TestCase
   {
     if (!$this->isGuzzle6()) {
       $this->markTestSkipped('Guzzle 6 only');
+    }
+  }
+
+  public function onlyPhp55AndAbove()
+  {
+    if (version_compare(PHP_VERSION, '5.5', '<')) {
+      $this->markTestSkipped('PHP 5.5 and above only');
     }
   }
 
